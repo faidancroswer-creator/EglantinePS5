@@ -2190,7 +2190,11 @@ if(EDEN_PS5_OPENGL)
         # The new core completion targets one caller, with a stop-aware native wait.
         # Keep the pinned legacy adaptation for older source revisions.
         string(FIND "${gpu_worker}" "if (completion) completion->Wait();" targeted_wait_at)
-        if(NOT targeted_wait_at LESS 0)
+        # The Lichii core waits on the write lock's condition variable with the worker's stop
+        # token (stop_source above) and signals it under that lock: stop-aware and woken as is.
+        string(FIND "${gpu_worker}" "state.cv.wait(lk, stop_source.get_token(), [this, fence] {" cv_wait_at)
+        if(NOT cv_wait_at LESS 0)
+        elseif(NOT targeted_wait_at LESS 0)
             string(REPLACE "if (completion) completion->Wait();"
                 "if (completion && !completion->Wait(stop_source.get_token())) return 0;"
                 gpu_worker "${gpu_worker}")
@@ -2408,6 +2412,8 @@ ${paths_source}")
     # Eglantine measures the TSC of CPUs without leaf 0x15 itself, for frequency 0 only; the block
     # below covers every frequency under 1 GHz, so that one goes (tools/check-tsc-fallback.py).
     string(REPLACE "    // AMD CPUs have no leaf 0x15 (Zen 4 stops at 0x10): measure their invariant TSC too, or every\n    // guest clock read (CNTPCT, which games read thousands of times a frame) goes through the\n    // host's much slower QueryPerformanceCounter.\n    if (caps.invariant_tsc && caps.tsc_frequency == 0) {\n        caps.tsc_frequency = X64::EstimateRDTSCFrequency();\n    }\n\n" "" features_source "${features_source}")
+    # The Lichii core's version of that block (CPUs without leaf 0x15 only) goes the same way.
+    string(REPLACE "    // AMD CPUs have no leaf 0x15 (Zen 4 stops at 0x10): measure their invariant TSC too, or every\n    // guest clock read (CNTPCT, which games read thousands of times a frame) goes through the\n    // host's much slower QueryPerformanceCounter. Intel CPUs that have the leaf but report no\n    // crystal frequency (e.g. Coffee Lake) keep the OS clock: an i5-9400F crashed at launch on the\n    // measured RDTSC clock.\n    if (max_std_fn < 0x15 && caps.invariant_tsc && caps.tsc_frequency == 0) {\n        caps.tsc_frequency = X64::EstimateRDTSCFrequency();\n    }\n\n" "" features_source "${features_source}")
     string(REPLACE "    if (max_std_fn >= 0x16) {"
         "    if (caps.invariant_tsc && caps.tsc_frequency < 1'000'000'000ULL) {\n        caps.tsc_frequency = X64::EstimateRDTSCFrequency();\n    }\n\n    if (max_std_fn >= 0x16) {" features_source "${features_source}")
     write_derived("${PORT_BUILD_DIR}/cpu_features.cpp" "${features_source}")
@@ -2517,8 +2523,8 @@ ${fs_service}")
     write_derived("${PORT_BUILD_DIR}/filesystem.cpp" "${fs_service}")
     list(REMOVE_ITEM core_sources hle/service/filesystem/filesystem.cpp)
     list(APPEND core_sources "${PORT_BUILD_DIR}/filesystem.cpp")
-    list(REMOVE_ITEM core_sources internal_network/network.cpp "${MULTIPLAYER_OUTPUT}/socket_network.cpp")
-    file(READ "${MULTIPLAYER_OUTPUT}/socket_network.cpp" network_source)
+    list(REMOVE_ITEM core_sources internal_network/network.cpp)
+    file(READ "${PROJECT_SOURCE_DIR}/src/core/internal_network/network.cpp" network_source)
     string(REPLACE "namespace Network {" "namespace Network {\n#ifndef IPPROTO_DCCP\nconstexpr int IPPROTO_DCCP = 33;\n#endif" network_source "${network_source}")
     # Native pipes can be created but fail their first byte write with ENOMEM.
     # Preserve Eden's poll/write/read wakeup design using a local socket pair.
@@ -2738,7 +2744,7 @@ target_link_libraries(eden-headless PRIVATE core eden-pad)
 # A game's text entry on the PS5's own on-screen keyboard (system_keyboard.h, keyboard_applet.h).
 target_sources(eden-headless PRIVATE "${EDEN_PORT_DIR}/system_keyboard.cpp")
 target_sources(eden-headless PRIVATE "${EDEN_PORT_DIR}/multiplayer.cpp")
-target_include_directories(eden-headless BEFORE PRIVATE "${MULTIPLAYER_SOCKET_HEADERS}" "${MULTIPLAYER_OUTPUT}")
+target_include_directories(eden-headless BEFORE PRIVATE "${MULTIPLAYER_OUTPUT}")
 if(PS5_NATIVE)
     target_link_libraries(eden-headless PRIVATE
         "${sdk}/target/lib/libSceImeDialog.so" "${sdk}/target/lib/libSceSysmodule.so"
